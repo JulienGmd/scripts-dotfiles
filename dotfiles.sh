@@ -188,10 +188,19 @@ function push() {
 	done
 	git_cmd add "$FILE_CONFIG" # stage dotfiles config
 
-	# 2. commit
+	# 2. display diff and ask confirm
+	git_cmd diff --cached
+	read -rp "Do you want to commit and push these changes? [Y/n]: " confirm_push
+	confirm_push=${confirm_push:-Y}
+	if [[ "$confirm_push" != [yY] ]]; then
+		echo_info "Push cancelled."
+		return
+	fi
+
+	# 3. commit
 	git_cmd commit -m "dotfiles auto commit" || true
 
-	# 3. create remote repo if it doesn't exist
+	# 4. create remote repo if it doesn't exist
 	if ! git_cmd ls-remote origin &>/dev/null; then
 		if command -v gh &>/dev/null; then
 			# Ask if user wants to create a private repo
@@ -213,7 +222,7 @@ function push() {
 		fi
 	fi
 
-	# 4. push
+	# 5. push
 	git_cmd push -u origin master || exit_error "Failed to push to remote repository."
 
 }
