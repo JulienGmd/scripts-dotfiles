@@ -116,9 +116,11 @@ function init() {
 	local ls_remote_err
 	ls_remote_err=$(git ls-remote "$REPO_URL" 2>&1 >/dev/null)
 	if [ $? -eq 0 ]; then
+		echo_debug "Remote repository found, cloning..."
 		# repo found, clone it
 		git clone --bare "$REPO_URL" "$DIR_GIT"
 	elif grep -q "Repository not found" <<<"$ls_remote_err"; then
+		echo_debug "Remote repository not found, creating a new bare repository..."
 		# repo not found, create a new one
 		mkdir -p "$DIR_GIT"
 		git init --bare "$DIR_GIT"
@@ -130,12 +132,14 @@ function init() {
 	set -e
 
 	# don't show untracked files since home is cluttered
+	echo_debug "Configuring git..."
 	git_cmd config --local status.showUntrackedFiles no
 }
 
 function add() {
 	if [ ! -d "$DIR_GIT" ]; then init; fi
 
+	echo_debug "Adding files..."
 	for file in "$@"; do
 		file="$(realpath "$file")"
 		if [ ! -e "$file" ]; then
@@ -150,6 +154,7 @@ function add() {
 function rm() {
 	if [ ! -d "$DIR_GIT" ]; then init; fi
 
+	echo_debug "Removing files..."
 	for file in "$@"; do
 		file="$(realpath "$file")"
 		if ! git_cmd ls-files --error-unmatch "$file" &>/dev/null; then
@@ -164,13 +169,15 @@ function rm() {
 function pull() {
 	if [ ! -d "$DIR_GIT" ]; then init; fi
 
-	git_cmd fetch origin master
+	echo_debug "Fetching changes from remote..."
+	git_cmd fetch origin +master:refs/remotes/origin/master
 
 	if ! git_cmd rev-parse --verify origin/master &>/dev/null; then
 		echo_debug "No remote branch yet"
 		return
 	fi
 
+	echo_debug "Pulling changes from remote..."
 	git_cmd reset --hard origin/master
 }
 
@@ -180,6 +187,7 @@ function push() {
 	ensure_readme
 
 	# 1. add
+	echo_debug "Staging changes..."
 	git_cmd update-index --assume-unchanged "$HOME/README.md" || true # ignore root README.md so it's not removed
 	git_cmd add -uv                                                   # stage modified/deleted tracked files
 	load_files_to_sync
@@ -189,6 +197,7 @@ function push() {
 	git_cmd add "$FILE_CONFIG" # stage dotfiles config
 
 	# 2. display diff and ask confirm
+	echo_debug "Displaying staged changes..."
 	git_cmd diff --cached
 	read -rp "Do you want to commit and push these changes? [Y/n]: " confirm_push
 	confirm_push=${confirm_push:-Y}
@@ -198,6 +207,7 @@ function push() {
 	fi
 
 	# 3. commit
+	echo_debug "Committing changes..."
 	git_cmd commit -m "dotfiles auto commit" || true
 
 	# 4. create remote repo if it doesn't exist
@@ -223,6 +233,7 @@ function push() {
 	fi
 
 	# 5. push
+	echo_debug "Pushing changes to remote..."
 	git_cmd push -u origin master || exit_error "Failed to push to remote repository."
 
 }
