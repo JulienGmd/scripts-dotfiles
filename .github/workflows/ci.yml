@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run tests
+        run: bash test.sh
+
+      - name: Install kcov
+        run: sudo apt-get update && sudo apt-get install -y kcov jq
+
+      - name: Measure coverage
+        run: |
+          kcov --include-pattern=dotfiles.sh "$PWD/coverage" ./test.sh
+          report="$(find coverage -name coverage.json | head -1)"
+          pct="$(jq -r '.percent_covered' "$report")"
+          echo "Line coverage (dotfiles.sh): ${pct}%"
+          echo "### Coverage (dotfiles.sh): ${pct}%" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage

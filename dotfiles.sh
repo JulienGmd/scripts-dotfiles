@@ -135,7 +135,7 @@ function rm() {
 			echo_warning "File not tracked: $file"
 			continue
 		fi
-		git_cmd rm --cached -rv "$file"
+		git_cmd rm --cached -r "$file"
 		remove_file_to_sync "$file"
 	done
 }
