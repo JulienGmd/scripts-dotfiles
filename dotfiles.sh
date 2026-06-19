@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 
-set -euo pipefail
+set -uo pipefail
 
 # ----- PARAMS -----------------------------------------------------------------
 
 DIR_GIT="$HOME/.dotfiles"
 FILE_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/dotfiles.conf"
+DIR_COMPLETIONS="${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}/completions"
 GRAY="\033[90m"
 YELLOW="\033[33m"
 RED="\033[31m"
@@ -18,9 +19,8 @@ function echo_debug() { echo -e "$GRAY$1$NC"; }
 function echo_warning() { echo -e "$YELLOW$1$NC" >&2; }
 function echo_error() { echo -e "$RED$1$NC" >&2; }
 function exit_error() {
-	set +u
 	echo_error "$1"
-	if [[ -n "${2+x}" ]]; then echo_debug "$2" >&2; fi
+	if [[ -n "${2+x}" ]]; then echo_debug "$2" >&2; fi # ${2+x}: "x" if $2 is set (even empty), "" if unset; prevents crash with set -u
 	exit 1
 }
 
@@ -30,38 +30,26 @@ if ! command -v git &>/dev/null; then exit_error "Please install git."; fi
 
 # ----- HELPERS ----------------------------------------------------------------
 
-# We are using a bare git repository to manage dotfiles in $HOME
+# Using a bare git repository to manage files in $HOME
 function git_cmd() { git --git-dir="$DIR_GIT" --work-tree="$HOME" "$@"; }
 
 function is_in_array() {
 	local thing="$1"
 	shift
-	local arr=("$@")
-	for item in "${arr[@]}"; do
-		if [[ "$item" == "$thing" ]]; then return 0; fi
+	for item in "$@"; do
+		[[ "$item" == "$thing" ]] && return 0
 	done
 	return 1
 }
 
-function ensure_readme() {
-	local readme_content
-	readme_content=$(
-		cat <<'EOF'
-# Dotfiles
-
-This repository is managed by the dotfiles.sh script.
-
-Download it at: https://github.com/JulienGmd/scripts-dotfiles
-EOF
-	)
-
-	# Create/Update README.md directly in the git index without a working-tree file
-	local blob_hash
-	blob_hash=$(printf '%s\n' "$readme_content" | git_cmd hash-object -w --stdin)
-	printf '100644 %s\t%s\n' "$blob_hash" "README.md" | git_cmd update-index --add --index-info
-	if git_cmd ls-files --error-unmatch -- "README.md" &>/dev/null; then
-		git_cmd update-index --skip-worktree -- "README.md" || true
-	fi
+function remove_from_array() {
+	local thing="$1"
+	local -n _arr="$2" # alias (pointer) to the array
+	local result=()
+	for item in "${_arr[@]}"; do
+		[[ "$item" != "$thing" ]] && result+=("$item")
+	done
+	_arr=("${result[@]}") # this sets the original array passed as argument
 }
 
 # ----- FILES TO SYNC MANAGEMENT -----------------------------------------------
@@ -69,10 +57,10 @@ EOF
 function load_files_to_sync() {
 	FILES_TO_SYNC=()
 
-	if [ ! -f "$FILE_CONFIG" ]; then return; fi
+	[ ! -f "$FILE_CONFIG" ] && return
 
 	while IFS= read -r line; do
-		if [[ -z "$line" ]]; then continue; fi
+		[[ -z "$line" ]] && continue
 		FILES_TO_SYNC+=("${line/#\$HOME/$HOME}") # expand $HOME
 	done <"$FILE_CONFIG"
 }
@@ -83,61 +71,47 @@ function save_files_to_sync() {
 }
 
 function add_file_to_sync() {
-	local file
-	file="$(realpath "$1")"
+	local file="$(realpath "$1")"
 	load_files_to_sync
-	if is_in_array "$file" "${FILES_TO_SYNC[@]}"; then return; fi
+	is_in_array "$file" "${FILES_TO_SYNC[@]}" && return
 	FILES_TO_SYNC+=("$file")
 	save_files_to_sync
 }
 
 function remove_file_to_sync() {
-	local file
-	file="$(realpath "$1")"
+	local file="$(realpath "$1")"
 	load_files_to_sync
-	local new_array=() # rebuild new array to prevent empty entries
-	for item in "${FILES_TO_SYNC[@]}"; do
-		if [[ "$item" != "$file" ]]; then new_array+=("$item"); fi
-	done
-	FILES_TO_SYNC=("${new_array[@]}")
+	remove_from_array "$file" FILES_TO_SYNC
 	save_files_to_sync
 }
 
 # ----- MAIN COMMANDS ----------------------------------------------------------
 
 function init() {
-	if [ -d "$DIR_GIT" ]; then return; fi
+	[ -d "$DIR_GIT" ] && exit_error "Dotfiles repository already exists at $DIR_GIT."
 
 	# Ask for git repo name
-	read -rp "Enter the git repository URL for your dotfiles (e.g. git@github.com:username/dotfiles.git): " REPO_URL
-	if [[ -z "$REPO_URL" ]]; then exit_error "Repository URL cannot be empty."; fi
+	read -rp "Enter the git repository URL for your dotfiles (e.g. git@github.com:<user>/<repo>.git): " REPO_URL
+	[[ -z "$REPO_URL" ]] && exit_error "Please provide a repository URL."
 
-	set +e
-	local ls_remote_err
-	ls_remote_err=$(git ls-remote "$REPO_URL" 2>&1 >/dev/null)
-	if [ $? -eq 0 ]; then
-		echo_debug "Remote repository found, cloning..."
-		# repo found, clone it
-		git clone --bare "$REPO_URL" "$DIR_GIT"
-	elif grep -q "Repository not found" <<<"$ls_remote_err"; then
-		echo_debug "Remote repository not found, creating a new bare repository..."
-		# repo not found, create a new one
-		mkdir -p "$DIR_GIT"
-		git init --bare "$DIR_GIT"
-		git_cmd remote add origin "$REPO_URL"
-	else
-		# error occurred (repo probably inaccessible)
-		exit_error "Failed to access $REPO_URL." "$ls_remote_err"
-	fi
-	set -e
+	local ls_remote_err ls_remote_rc
+	ls_remote_err=$(git ls-remote "$REPO_URL" 2>&1 >/dev/null); ls_remote_rc=$?
+	[ $ls_remote_rc -ne 0 ] && ! grep -q "Repository not found" <<<"$ls_remote_err" \
+		&& exit_error "Failed to access $REPO_URL:" "$ls_remote_err"
+
+	mkdir -p "$DIR_GIT"
+	git init --bare "$DIR_GIT" || exit_error "Failed to init repository."
+	git_cmd remote add origin "$REPO_URL" || exit_error "Failed to add remote."
 
 	# don't show untracked files since home is cluttered
 	echo_debug "Configuring git..."
 	git_cmd config --local status.showUntrackedFiles no
+
+	[ $ls_remote_rc -eq 0 ] && echo_info "Remote repository found. Run 'pull' to fetch your dotfiles."
 }
 
 function add() {
-	if [ ! -d "$DIR_GIT" ]; then init; fi
+	[ ! -d "$DIR_GIT" ] && init
 
 	echo_debug "Adding files..."
 	for file in "$@"; do
@@ -152,7 +126,7 @@ function add() {
 }
 
 function rm() {
-	if [ ! -d "$DIR_GIT" ]; then init; fi
+	[ ! -d "$DIR_GIT" ] && init
 
 	echo_debug "Removing files..."
 	for file in "$@"; do
@@ -161,13 +135,13 @@ function rm() {
 			echo_warning "File not tracked: $file"
 			continue
 		fi
-		git_cmd rm --cached -r "$file"
+		git_cmd rm --cached -rv "$file"
 		remove_file_to_sync "$file"
 	done
 }
 
 function pull() {
-	if [ ! -d "$DIR_GIT" ]; then init; fi
+	[ ! -d "$DIR_GIT" ] && init
 
 	echo_debug "Fetching changes from remote..."
 	git_cmd fetch origin +master:refs/remotes/origin/master
@@ -177,24 +151,33 @@ function pull() {
 		return
 	fi
 
+	echo_debug "Displaying incoming changes..."
+	# first pull after init has no local commit yet, so diff against an empty tree
+	local base="HEAD"
+	git_cmd rev-parse --verify -q HEAD &>/dev/null || base="$(git_cmd hash-object -t tree /dev/null)"
+	git_cmd diff "$base" origin/master
+	read -rp "Do you want to apply these changes? [Y/n]: " confirm_pull
+	confirm_pull=${confirm_pull:-Y}
+	if [[ "$confirm_pull" != [yY] ]]; then
+		echo_info "Pull cancelled."
+		return
+	fi
+
 	echo_debug "Pulling changes from remote..."
 	git_cmd reset --hard origin/master
 }
 
 function push() {
-	if [ ! -d "$DIR_GIT" ]; then init; fi
-
-	ensure_readme
+	[ ! -d "$DIR_GIT" ] && init
 
 	# 1. add
 	echo_debug "Staging changes..."
-	git_cmd update-index --assume-unchanged "$HOME/README.md" || true # ignore root README.md so it's not removed
-	git_cmd add -uv                                                   # stage modified/deleted tracked files
+	git_cmd add -uv # stage modified/deleted tracked files
 	load_files_to_sync
 	for file in "${FILES_TO_SYNC[@]}"; do
 		git_cmd add -v "$file" # stage new files and directories that are in FILES_TO_SYNC
 	done
-	git_cmd add "$FILE_CONFIG" # stage dotfiles config
+	[ -f "$FILE_CONFIG" ] && git_cmd add "$FILE_CONFIG" # stage dotfiles config
 
 	# 2. display diff and ask confirm
 	echo_debug "Displaying staged changes..."
@@ -208,34 +191,63 @@ function push() {
 
 	# 3. commit
 	echo_debug "Committing changes..."
-	git_cmd commit -m "dotfiles auto commit" || true
+	git_cmd commit -m "dotfiles auto commit"
 
 	# 4. create remote repo if it doesn't exist
 	if ! git_cmd ls-remote origin &>/dev/null; then
+		# Extract repo name from origin URL
+		local origin_url="$(git_cmd config --get remote.origin.url)"
+		local repo_name="$(basename "$origin_url" .git)"
 		if command -v gh &>/dev/null; then
 			# Ask if user wants to create a private repo
 			read -rp "Remote repository not found. Do you want to create a private repository on GitHub? [Y/n]: " create_repo
 			create_repo=${create_repo:-Y}
-			if [[ "$create_repo" != [yY] ]]; then
-				exit_error "Push failed. Remote repository may not exist. Please create it manually."
-			fi
-			# Extract repo name from origin URL
-			local origin_url
-			origin_url=$(git_cmd config --get remote.origin.url)
-			local repo_name
-			repo_name=$(basename "$origin_url" .git)
+			[[ "$create_repo" != [yY] ]] && exit_error "Please create it manually (expected repo name: $repo_name)."
 			# create repo using GitHub CLI
-			gh repo create "$repo_name" --private || exit_error "Failed to create GitHub repository."
+			local gh_err
+			gh_err=$(gh repo create "$repo_name" --private 2>&1) || exit_error "Failed to create GitHub repository." "$gh_err"
 			echo_info "Repository created successfully."
 		else
-			exit_error "Push failed. Remote repository may not exist. Please create it manually or install GitHub CLI (gh) to create it automatically."
+			exit_error "Push failed. Remote repository may not exist. Please create it manually (expected repo name: $repo_name) or install GitHub CLI (gh) to create it automatically."
 		fi
 	fi
 
 	# 5. push
 	echo_debug "Pushing changes to remote..."
-	git_cmd push -u origin master || exit_error "Failed to push to remote repository."
+	local push_err
+	push_err=$(git_cmd push --force -u origin master 2>&1) || exit_error "Failed to push to remote repository." "$push_err"
+}
 
+function completions() {
+	mkdir -p "$DIR_COMPLETIONS"
+	cat >"$DIR_COMPLETIONS/_dotfiles" <<'EOF'
+#compdef dotfiles
+
+_dotfiles() {
+  local -a commands=(
+    'help:Display this help message'
+    'add:Add FILE(s) to be tracked'
+    'rm:Remove FILE(s) from being tracked'
+    'push:Push changes'
+    'pull:Pull changes'
+    'git:Run a git command on the dotfiles repository'
+    'completions:Install zsh completions'
+  )
+
+  if (( CURRENT == 2 )); then
+    _describe 'command' commands
+  elif (( CURRENT > 2 )); then
+    case $words[2] in
+      add) _files -F words ;;
+      rm) compadd -F words -- ${(f)"$(dotfiles git ls-files 2>/dev/null)"} ;;
+      git) local -x GIT_DIR="$HOME/.dotfiles" GIT_WORK_TREE="$HOME"; words=(git ${words[3,-1]}); (( CURRENT-- )); _normal ;;
+    esac
+  fi
+}
+
+_dotfiles "$@"
+EOF
+	echo_info "Completions installed. Restart your shell or run: exec zsh"
 }
 
 function usage() {
@@ -248,6 +260,7 @@ function usage() {
 	echo "  push                Push changes"
 	echo "  pull                Pull changes"
 	echo "  git GIT_COMMAND...  Run a git command on the dotfiles repository"
+	echo "  completions         Install zsh completions"
 }
 
 # ----- ENTRY POINT ------------------------------------------------------------
@@ -280,6 +293,9 @@ function main() {
 	git)
 		shift
 		git_cmd "$@"
+		;;
+	completions)
+		completions
 		;;
 	*)
 		echo_error "Unknown command: $1"
