@@ -20,6 +20,8 @@ unset ZSH_CUSTOM \
 PASS=0
 FAIL=0
 COUNTER=0
+OUT=""
+REMOTE=""
 
 # ----- ASSERTIONS -------------------------------------------------------------
 
@@ -39,17 +41,16 @@ function assert_no_file() { [ ! -e "$1" ] && pass "$2" || fail "$2" "should not 
 function assert_eq() { [ "$1" = "$2" ] && pass "$3" || fail "$3" "expected '$1', got '$2'"; }
 function assert_contains() { grep -q -- "$2" "$1" 2>/dev/null && pass "$3" || fail "$3" "'$2' not found in $1"; }
 function assert_not_contains() { ! grep -q -- "$2" "$1" 2>/dev/null && pass "$3" || fail "$3" "'$2' still in $1"; }
-
-function assert_tracked() {
-	git --git-dir="$HOME/.dotfiles" --work-tree="$HOME" ls-files --error-unmatch "$1" &>/dev/null \
-		&& pass "$2" || fail "$2" "not tracked: $1"
-}
-function assert_not_tracked() {
-	! git --git-dir="$HOME/.dotfiles" --work-tree="$HOME" ls-files --error-unmatch "$1" &>/dev/null \
-		&& pass "$2" || fail "$2" "still tracked: $1"
-}
+function assert_output_contains() { echo "$OUT" | grep -qi -- "$1" && pass "$2" || fail "$2" "output missing: $1"; }
+function assert_tracked() { dot ls-files --error-unmatch "$1" &>/dev/null && pass "$2" || fail "$2" "not tracked: $1"; }
+function assert_not_tracked() { ! dot ls-files --error-unmatch "$1" &>/dev/null && pass "$2" || fail "$2" "still tracked: $1"; }
+function assert_remote_has() { git --git-dir="$REMOTE" ls-tree -r --name-only master 2>/dev/null | grep -q -- "$1" && pass "$2" || fail "$2" "remote missing: $1"; }
+function assert_remote_empty() { ! git --git-dir="$REMOTE" rev-parse --verify -q master &>/dev/null && pass "$1" || fail "$1" "remote was unexpectedly updated"; }
 
 # ----- HELPERS ----------------------------------------------------------------
+
+# Run git against the dotfiles bare repo of the current sandbox home
+function dot() { git --git-dir="$HOME/.dotfiles" --work-tree="$HOME" "$@"; }
 
 # Create an isolated home with a git identity, and point $HOME at it
 function use_new_home() {
@@ -66,12 +67,13 @@ function use_new_home() {
 	export GIT_CONFIG_SYSTEM="/dev/null"
 }
 
-# Create a bare repo to act as a remote, echo its path
-function new_remote() {
+# Fresh sandbox: an isolated home plus a bare remote acting as the git remote.
+# Sets $HOME (via use_new_home) and $REMOTE.
+function sandbox() {
+	use_new_home
 	COUNTER=$((COUNTER + 1))
-	local remote="$TEST_ROOT/remote$COUNTER.git"
-	git init -q --bare "$remote"
-	echo "$remote"
+	REMOTE="$TEST_ROOT/remote$COUNTER.git"
+	git init -q --bare "$REMOTE"
 }
 
 # Run dotfiles.sh, capturing combined output in $OUT. Stdin is inherited, so
@@ -89,17 +91,15 @@ function run() {
 	OUT="$(bash "$DOTFILES" "$@" 2>&1)"
 }
 
-CONFIG() { echo "$XDG_CONFIG_HOME/dotfiles.conf"; }
+function CONFIG() { echo "$XDG_CONFIG_HOME/dotfiles.conf"; }
 
 # ----- TESTS ------------------------------------------------------------------
 
 function test_add_initializes_and_tracks() {
-	echo "test_add_initializes_and_tracks"
-	use_new_home
-	local remote; remote="$(new_remote)"
+	sandbox
 	echo "rc content" >"$HOME/.myrc"
 
-	run add "$HOME/.myrc" <<<"$remote"
+	run add "$HOME/.myrc" <<<"$REMOTE"
 
 	assert_file "$HOME/.dotfiles" "add inits the bare repo on first run"
 	assert_file "$(CONFIG)" "add writes the config file"
@@ -108,35 +108,28 @@ function test_add_initializes_and_tracks() {
 }
 
 function test_config_uses_home_placeholder() {
-	echo "test_config_uses_home_placeholder"
-	use_new_home
-	local remote; remote="$(new_remote)"
+	sandbox
 	echo x >"$HOME/.myrc"
 
-	run add "$HOME/.myrc" <<<"$remote"
+	run add "$HOME/.myrc" <<<"$REMOTE"
 
 	assert_contains "$(CONFIG)" '^\$HOME/.myrc$' "config stores path with \$HOME placeholder, not absolute"
 }
 
 function test_push_updates_remote() {
-	echo "test_push_updates_remote"
-	use_new_home
-	local remote; remote="$(new_remote)"
+	sandbox
 	echo "content" >"$HOME/.myrc"
-	run add "$HOME/.myrc" <<<"$remote"
+	run add "$HOME/.myrc" <<<"$REMOTE"
 
 	run push <<<"Y"
 
-	git --git-dir="$remote" ls-tree -r --name-only master 2>/dev/null | grep -q '.myrc' \
-		&& pass "pushed file appears on the remote" || fail "pushed file appears on the remote"
+	assert_remote_has '.myrc' "pushed file appears on the remote"
 }
 
 function test_rm_untracks_and_updates_config() {
-	echo "test_rm_untracks_and_updates_config"
-	use_new_home
-	local remote; remote="$(new_remote)"
+	sandbox
 	echo x >"$HOME/.myrc"
-	run add "$HOME/.myrc" <<<"$remote"
+	run add "$HOME/.myrc" <<<"$REMOTE"
 
 	run rm "$HOME/.myrc"
 
@@ -145,98 +138,80 @@ function test_rm_untracks_and_updates_config() {
 }
 
 function test_pull_roundtrip() {
-	echo "test_pull_roundtrip"
 	# Machine A: add + push
-	use_new_home
-	local remote; remote="$(new_remote)"
+	sandbox
 	echo "hello from A" >"$HOME/.foorc"
-	run add "$HOME/.foorc" <<<"$remote"
+	run add "$HOME/.foorc" <<<"$REMOTE"
 	run push <<<"Y"
 
 	# Machine B: fresh home, same remote, pull
 	use_new_home
-	run pull <<<"$remote"$'\nY'
+	run pull <<<"$REMOTE"$'\nY'
 
 	assert_file "$HOME/.foorc" "pull brings the file onto a second machine"
 	assert_eq "hello from A" "$(cat "$HOME/.foorc" 2>/dev/null)" "pulled file keeps its content"
 }
 
 function test_add_missing_file_warns() {
-	echo "test_add_missing_file_warns"
-	use_new_home
-	local remote; remote="$(new_remote)"
+	sandbox
 
-	run add "$HOME/.does_not_exist" <<<"$remote"
+	run add "$HOME/.does_not_exist" <<<"$REMOTE"
 
 	assert_not_tracked "$HOME/.does_not_exist" "missing file is not tracked"
-	echo "$OUT" | grep -qi "not found" \
-		&& pass "add warns about the missing file" || fail "add warns about the missing file"
+	assert_output_contains "not found" "add warns about the missing file"
 }
 
 function test_add_is_idempotent() {
-	echo "test_add_is_idempotent"
-	use_new_home
-	local remote; remote="$(new_remote)"
+	sandbox
 	echo x >"$HOME/.myrc"
 
-	run add "$HOME/.myrc" <<<"$remote"
+	run add "$HOME/.myrc" <<<"$REMOTE"
 	run add "$HOME/.myrc" # second time: repo already inited, no prompt
 
 	assert_eq "1" "$(grep -c '.myrc' "$(CONFIG)")" "adding the same file twice keeps one config entry"
 }
 
 function test_rm_untracked_warns() {
-	echo "test_rm_untracked_warns"
-	use_new_home
-	local remote; remote="$(new_remote)"
+	sandbox
 	echo x >"$HOME/.tracked"
-	run add "$HOME/.tracked" <<<"$remote"
+	run add "$HOME/.tracked" <<<"$REMOTE"
 	echo y >"$HOME/.untracked"
 
 	run rm "$HOME/.untracked"
 
-	echo "$OUT" | grep -qi "not tracked" \
-		&& pass "rm warns when the file is not tracked" || fail "rm warns when the file is not tracked"
+	assert_output_contains "not tracked" "rm warns when the file is not tracked"
 }
 
 function test_push_cancel_leaves_remote_untouched() {
-	echo "test_push_cancel_leaves_remote_untouched"
-	use_new_home
-	local remote; remote="$(new_remote)"
+	sandbox
 	echo x >"$HOME/.myrc"
-	run add "$HOME/.myrc" <<<"$remote"
+	run add "$HOME/.myrc" <<<"$REMOTE"
 
 	run push <<<"n"
 
-	git --git-dir="$remote" rev-parse --verify -q master &>/dev/null \
-		&& fail "cancelled push must not update the remote" \
-		|| pass "cancelled push leaves the remote untouched"
+	assert_remote_empty "cancelled push leaves the remote untouched"
 }
 
 function test_pull_cancel_leaves_files_untouched() {
-	echo "test_pull_cancel_leaves_files_untouched"
 	# Machine A: publish a file
-	use_new_home
-	local remote; remote="$(new_remote)"
+	sandbox
 	echo "hello" >"$HOME/.foorc"
-	run add "$HOME/.foorc" <<<"$remote"
+	run add "$HOME/.foorc" <<<"$REMOTE"
 	run push <<<"Y"
 
 	# Machine B: pull but answer no
 	use_new_home
-	run pull <<<"$remote"$'\nn'
+	run pull <<<"$REMOTE"$'\nn'
 
 	assert_no_file "$HOME/.foorc" "cancelled pull does not write any file"
 }
 
 function test_paths_with_spaces() {
-	echo "test_paths_with_spaces"
-	use_new_home
-	local remote; remote="$(new_remote)"
+	sandbox
 	local f="$HOME/my file.rc"
 	echo x >"$f"
 
-	run add "$f" <<<"$remote"
+	run add "$f" <<<"$REMOTE"
 	assert_tracked "$f" "file with spaces is tracked"
 	assert_contains "$(CONFIG)" 'my file.rc' "config stores file with spaces"
 
@@ -246,17 +221,11 @@ function test_paths_with_spaces() {
 
 # ----- RUN --------------------------------------------------------------------
 
-test_add_initializes_and_tracks
-test_config_uses_home_placeholder
-test_push_updates_remote
-test_rm_untracks_and_updates_config
-test_pull_roundtrip
-test_add_missing_file_warns
-test_add_is_idempotent
-test_rm_untracked_warns
-test_push_cancel_leaves_remote_untouched
-test_pull_cancel_leaves_files_untouched
-test_paths_with_spaces
+# Auto-discover and run every test_* function, printing its name as a header
+for fn in $(compgen -A function | grep '^test_'); do
+	printf '\033[1m%s\033[0m\n' "$fn"
+	"$fn"
+done
 
 echo
 printf 'Passed: \033[32m%d\033[0m  Failed: \033[31m%d\033[0m\n' "$PASS" "$FAIL"
