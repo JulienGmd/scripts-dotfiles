@@ -6,8 +6,9 @@ where they already live.
 
 ## How it works
 
-`dotfiles.sh` drives a bare repository at `~/.dotfiles` with the work tree set
-to `$HOME`. The list of files you track is kept in
+`dotfiles.sh` drives a bare repository at
+`${XDG_DATA_HOME:-~/.local/share}/dotfiles` with the work tree set to `$HOME`.
+The list of files you track is kept in
 `${XDG_CONFIG_HOME:-~/.config}/dotfiles.conf`, with `$HOME` stored as a
 placeholder so the config is portable across machines.
 
@@ -42,8 +43,7 @@ dotfiles help          Show usage
 ```
 
 On the first command, the script asks for your dotfiles repository URL and
-initializes `~/.dotfiles`. If the remote already has commits, run `pull` to
-fetch them.
+initializes it. If the remote already has commits, run `pull` to fetch them.
 
 ### Example
 

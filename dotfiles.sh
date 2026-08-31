@@ -4,7 +4,7 @@ set -uo pipefail
 
 # ----- PARAMS -----------------------------------------------------------------
 
-DIR_GIT="$HOME/.dotfiles"
+DIR_GIT="${XDG_DATA_HOME:-$HOME/.local/share}/dotfiles"
 FILE_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/dotfiles.conf"
 DIR_COMPLETIONS="${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}/completions"
 GRAY="\033[90m"
@@ -71,7 +71,7 @@ function save_files_to_sync() {
 }
 
 function add_file_to_sync() {
-	local file="$(realpath "$1")"
+	local file="$(realpath -m "$1")"
 	load_files_to_sync
 	is_in_array "$file" "${FILES_TO_SYNC[@]}" && return
 	FILES_TO_SYNC+=("$file")
@@ -79,7 +79,7 @@ function add_file_to_sync() {
 }
 
 function remove_file_to_sync() {
-	local file="$(realpath "$1")"
+	local file="$(realpath -m "$1")"
 	load_files_to_sync
 	remove_from_array "$file" FILES_TO_SYNC
 	save_files_to_sync
@@ -115,7 +115,7 @@ function add() {
 
 	echo_debug "Adding files..."
 	for file in "$@"; do
-		file="$(realpath "$file")"
+		file="$(realpath -m "$file")"
 		if [ ! -e "$file" ]; then
 			echo_warning "File not found: $file"
 			continue
@@ -130,7 +130,7 @@ function rm() {
 
 	echo_debug "Removing files..."
 	for file in "$@"; do
-		file="$(realpath "$file")"
+		file="$(realpath -m "$file")"
 		if ! git_cmd ls-files --error-unmatch "$file" &>/dev/null; then
 			echo_warning "File not tracked: $file"
 			continue
@@ -240,7 +240,7 @@ _dotfiles() {
     case $words[2] in
       add) _files -F words ;;
       rm) compadd -F words -- ${(f)"$(dotfiles git ls-files 2>/dev/null)"} ;;
-      git) local -x GIT_DIR="$HOME/.dotfiles" GIT_WORK_TREE="$HOME"; words=(git ${words[3,-1]}); (( CURRENT-- )); _normal ;;
+      git) local -x GIT_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/dotfiles" GIT_WORK_TREE="$HOME"; words=(git ${words[3,-1]}); (( CURRENT-- )); _normal ;;
     esac
   fi
 }

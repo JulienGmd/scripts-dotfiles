@@ -12,7 +12,8 @@ TEST_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TEST_ROOT"' EXIT
 
 # Sanitize any inherited env vars that could redirect git or the script back to
-# the real home. HOME / XDG_CONFIG_HOME / GIT_CONFIG_GLOBAL are set per-test.
+# the real home. HOME / XDG_CONFIG_HOME / XDG_DATA_HOME /
+# GIT_CONFIG_GLOBAL are set per-test.
 unset ZSH_CUSTOM \
 	GIT_DIR GIT_WORK_TREE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES \
 	GIT_TEMPLATE_DIR GIT_CONFIG GIT_CONFIG_COUNT GIT_CONFIG_GLOBAL 2>/dev/null || true
@@ -50,7 +51,7 @@ function assert_remote_empty() { ! git --git-dir="$REMOTE" rev-parse --verify -q
 # ----- HELPERS ----------------------------------------------------------------
 
 # Run git against the dotfiles bare repo of the current sandbox home
-function dot() { git --git-dir="$HOME/.dotfiles" --work-tree="$HOME" "$@"; }
+function dot() { git --git-dir="$XDG_DATA_HOME/dotfiles" --work-tree="$HOME" "$@"; }
 
 # Create an isolated home with a git identity, and point $HOME at it
 function use_new_home() {
@@ -62,6 +63,7 @@ function use_new_home() {
 	git config --file "$home/.gitconfig" init.defaultBranch master
 	export HOME="$home"
 	export XDG_CONFIG_HOME="$home/.config"
+	export XDG_DATA_HOME="$home/.local/share"
 	# force git to read only the sandbox config, never the real ~/.gitconfig or system
 	export GIT_CONFIG_GLOBAL="$home/.gitconfig"
 	export GIT_CONFIG_SYSTEM="/dev/null"
@@ -101,7 +103,7 @@ function test_add_initializes_and_tracks() {
 
 	run add "$HOME/.myrc" <<<"$REMOTE"
 
-	assert_file "$HOME/.dotfiles" "add inits the bare repo on first run"
+	assert_file "$XDG_DATA_HOME/dotfiles" "add inits the bare repo on first run"
 	assert_file "$(CONFIG)" "add writes the config file"
 	assert_contains "$(CONFIG)" '.myrc' "config lists the added file"
 	assert_tracked "$HOME/.myrc" "added file is tracked by git"
@@ -169,6 +171,18 @@ function test_add_is_idempotent() {
 	run add "$HOME/.myrc" # second time: repo already inited, no prompt
 
 	assert_eq "1" "$(grep -c '.myrc' "$(CONFIG)")" "adding the same file twice keeps one config entry"
+}
+
+function test_rm_deleted_file() {
+	sandbox
+	echo x >"$HOME/.myrc"
+	run add "$HOME/.myrc" <<<"$REMOTE"
+	command rm "$HOME/.myrc"
+
+	run rm "$HOME/.myrc"
+
+	assert_not_tracked "$HOME/.myrc" "file deleted from disk is no longer tracked"
+	assert_not_contains "$(CONFIG)" '.myrc' "file deleted from disk is dropped from config"
 }
 
 function test_rm_untracked_warns() {
