@@ -185,6 +185,20 @@ function test_rm_deleted_file() {
 	assert_not_contains "$(CONFIG)" '.myrc' "file deleted from disk is dropped from config"
 }
 
+function test_rm_file_whose_deletion_was_pushed() {
+	sandbox
+	echo x >"$HOME/.myrc"
+	run add "$HOME/.myrc" <<<"$REMOTE"
+	run push <<<"Y"
+	command rm "$HOME/.myrc"
+	run push <<<"Y"
+
+	run rm "$HOME/.myrc"
+
+	assert_not_contains "$(CONFIG)" '.myrc' "file whose deletion was pushed is dropped from config"
+	assert_eq "0" "$(echo "$OUT" | grep -ci 'not tracked')" "rm does not warn about a file listed in config"
+}
+
 function test_rm_untracked_warns() {
 	sandbox
 	echo x >"$HOME/.tracked"

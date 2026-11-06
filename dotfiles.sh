@@ -131,11 +131,13 @@ function rm() {
 	echo_debug "Removing files..."
 	for file in "$@"; do
 		file="$(realpath -m "$file")"
-		if ! git_cmd ls-files --error-unmatch "$file" &>/dev/null; then
+		load_files_to_sync
+		if git_cmd ls-files --error-unmatch "$file" &>/dev/null; then
+			git_cmd rm --cached -r "$file"
+		elif ! is_in_array "$file" "${FILES_TO_SYNC[@]}"; then
 			echo_warning "File not tracked: $file"
 			continue
 		fi
-		git_cmd rm --cached -r "$file"
 		remove_file_to_sync "$file"
 	done
 }
